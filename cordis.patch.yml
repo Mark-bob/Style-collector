@@ -1,0 +1,7 @@
+# 风格采集器 bundle patch。
+# 一个包、两个 Host 入口（采集工具 + UI 路由/工具），外加 Client 面板。
+- insert:
+    - id: style-collector
+      name: '@local/style-collector'
+    - id: style-collector-ui
+      name: '@local/style-collector/ui-host'
