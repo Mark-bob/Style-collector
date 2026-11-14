@@ -25,7 +25,7 @@
 | `cleanup_uploads` | 清理 `_ui-uploads` 中未被任何 pack 引用的文件（默认 dry-run） |
 
 - `director_pack_init`：参数 `director`、`anchor_works`，返回 `pack_id`；已存在时返回 `already_exists`。
-- `photo_append`：写 `photos.jsonl`；`focus` 列出的字段必须在 `observations` 里，未列出的字段必须为 null 或省略；同时检查 `path` 文件是否存在，写入 `path_verified`（不存在也允许追加，只标记未验证）。可选 `role`、`subject_id`。
+- `photo_append`：写 `photos.jsonl`；`focus` 列出的字段必须在 `observations` 里，未列出的字段必须为 null 或省略；同时检查 `path` 文件是否存在，写入 `path_verified`（不存在也允许追加，只标记未验证）。可选 `role`（旧版单选）、`roles[]`（多选）、`subject_id`。
 - `photo_validate` / `director_pack_validate`：照片非空、每条 focus 都有 observation、`anti_patterns` / `honest_limits` 非空；照片模式不强制 `mental_models`。
 - `director_pack_export`：`format` 取 `pack` / `guide` / `both`（默认 both）；合并 `photos.jsonl` 进 `pack.photos`。
 - `cleanup_uploads`：扫描 `_ui-uploads`，只报告/删除未被任何 pack 的 `photos.jsonl` 或 `pack.json` 引用的文件；默认 `dry_run=true`，传 `confirm=true` 才真删。归档包引用同样受保护。
@@ -33,12 +33,12 @@
 
 ## 照片参考包模式
 
-- `PhotoRecord`：`photo_id`、`path`（绝对路径或 `photos/...` 包内相对路径）、`focus[]`、`observations{}`、`evidence_level: "observed"`、`path_verified?`、`role?`、`subject_id?`、`source_path?`。
+- `PhotoRecord`：`photo_id`、`path`（绝对路径或 `photos/...` 包内相对路径）、`focus[]`、`observations{}`、`evidence_level: "observed"`、`path_verified?`、`roles?`（多选；兼容旧 `role?`）、`subject_id?`、`source_path?`。
 - 生命周期：`confirm_observations` 成功后图片落到包内 `photos/`，`path` 改为 `photos/<id>.<ext>`；原上传路径记在 `source_path`。guide §6 优先输出 `./photos/...`；包外绝对路径仍输出绝对路径，未验证输出 `[路径未验证：文件名]`。
 - `subject_id`（可选）：同一主体填相同编号（如 `A`）。guide §4“人物/主体”把同编号照片聚合成 `主体 A（P01/P02）：…`，不填则逐图显示。
 - `_ui-uploads` 只是中转区；`cleanup_uploads` 可清理无引用文件，UI 的 `discard` 会删除该临时包引用过的上传原图。
 - focus 取值：`light_direction` / `color_palette` / `composition` / `perspective` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；`color_palette` 对应 `observations.key_colors`（hex）。
-- `role`（可选）：`style` / `lighting` / `color` / `composition` / `camera` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；guide §6 标注每张图的用途，色板按 role 分组聚合，不跨用途混合。旧值 `prop` 自动归一为 `props`。
+- `roles`（可选，多选）：`style` / `lighting` / `color` / `composition` / `camera` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；一张图可同时归属多个用途。guide §6 标注 `（氛围/色彩）`，色板在每个用途组各出现一次；未选用途时逐图输出 `色板聚合（P01）`，不再合并成“未指定”。旧值 `role` 自动并入，`prop` 归一为 `props`。
 - guide 里未在 `focus` 中列出的字段标 `[未采集]`，不是 `[待采集]`。
 - guide §6 路径按 `path_verified` 分支：验证过且在包目录内输出 `./相对路径`，验证过但在包外输出绝对路径，未验证输出 `[路径未验证：文件名]`；色板聚合注明提供 hex 的照片。
 

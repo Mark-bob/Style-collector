@@ -325,7 +325,12 @@ export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
       role: {
         type: 'string',
         enum: [...PHOTO_ROLES],
-        description: '用途：style（画风）/ lighting（灯光）/ color（色彩）/ composition（构图）/ camera（视角）/ setting（场景）/ material（材质）/ texture（质感）/ atmosphere（氛围）/ subject（人物）/ props（道具）/ note（备注）；省略则不标注。',
+        description: '旧版单选用途；新代码建议用 roles。',
+      },
+      roles: {
+        type: 'array',
+        items: { type: 'string', enum: [...PHOTO_ROLES] },
+        description: '一张图可多选用途（画风/灯光/色彩/构图/视角/场景/材质/质感/氛围/人物/道具/备注）；guide §6 会同时归入这些组。可选。',
       },
       subject_id: {
         type: 'string',
@@ -380,6 +385,7 @@ export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
         observations: args.observations,
         path_verified: verified,
         role: args.role,
+        roles: args.roles,
         subject_id: args.subject_id,
       })
       if (!validated.ok) {

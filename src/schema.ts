@@ -90,6 +90,8 @@ export interface PhotoRecord {
   evidence_level: 'observed'
   path_verified?: boolean
   role?: PhotoRole
+  /** 一张照片可有多个用途，例如同一张图既作氛围又作色彩参考。 */
+  roles?: PhotoRole[]
   /** 同一主体的编号；多张图填相同值时 guide §4 人物/主体聚合。 */
   subject_id?: string
   /** 原始上传文件绝对路径，仅供清理/审计；guide 不输出。 */
@@ -397,6 +399,23 @@ export function validatePhotoInput(raw: unknown): ValidationResult<PhotoRecord> 
       role = ROLE_ALIAS[roleRaw] ?? (roleRaw as PhotoRole)
     }
   }
+  const roles: PhotoRole[] = []
+  const rolesRaw = raw['roles']
+  if (rolesRaw !== undefined && rolesRaw !== null) {
+    if (!Array.isArray(rolesRaw)) {
+      issues.push('roles 必须是数组')
+    } else {
+      for (const entry of rolesRaw) {
+        if (typeof entry !== 'string' || !(PHOTO_ROLES as readonly string[]).includes(entry)) {
+          issues.push(`roles 非法：${String(entry)}（允许：${PHOTO_ROLES.join(', ')}）`)
+          continue
+        }
+        const normalized = ROLE_ALIAS[entry] ?? (entry as PhotoRole)
+        if (!roles.includes(normalized)) roles.push(normalized)
+      }
+    }
+  }
+  if (role !== undefined && !roles.includes(role)) roles.unshift(role)
   if (issues.length > 0) return { ok: false, issues }
   if (photoId === undefined || path === undefined) return { ok: false, issues: ['photo_id / path 不能为空'] }
   return {
@@ -408,7 +427,7 @@ export function validatePhotoInput(raw: unknown): ValidationResult<PhotoRecord> 
       observations,
       evidence_level: 'observed',
       ...(pathVerified === undefined ? {} : { path_verified: pathVerified }),
-      ...(role === undefined ? {} : { role }),
+      ...(roles.length === 0 ? {} : { roles }),
       ...(subjectId === undefined ? {} : { subject_id: subjectId }),
       ...(sourcePath === undefined ? {} : { source_path: sourcePath }),
     },

@@ -186,7 +186,7 @@ function focusList(input, path) {
   return [...DEFAULT_FOCUS]
 }
 
-function buildAnalyzePrompt(focus) {
+function buildAnalyzePrompt(focus, retry = false) {
   const keys = focus.map(field => (field === 'color_palette' ? 'key_colors' : field))
   const example = {}
   for (const field of focus) {
@@ -211,8 +211,10 @@ function buildAnalyzePrompt(focus) {
     `只分析以下关注项：${keys.join('、')}；不要分析或输出其他项。`,
     `JSON 必须包含这些键：${keys.join(', ')}。`,
     ...focus.map(field => hints[field]).filter(Boolean),
+    '每个字段 1–3 句，总输出控制在 1200 字以内。',
+    retry ? '上一次输出不完整或无法解析；这次务必输出完整、简短的 JSON。' : '',
     `示例形状：${JSON.stringify(example)}`,
-  ].join('\n')
+  ].filter(line => line.length > 0).join('\n')
 }
 
 function parseDraft(rawText, focus) {
@@ -262,6 +264,20 @@ async function pickVisionModel(ctx) {
   throw new Error('没有可用的多模态模型')
 }
 
+function errorText(error) {
+  const parts = []
+  const seen = new Set()
+  let current = error
+  while (current !== undefined && current !== null && parts.length < 4 && !seen.has(current)) {
+    seen.add(current)
+    if (typeof current === 'object' && typeof current.message === 'string' && current.message.trim().length > 0) {
+      parts.push(current.message.trim())
+    }
+    current = typeof current === 'object' ? current.cause : undefined
+  }
+  return parts.length > 0 ? parts.join(' ← ') : String(error)
+}
+
 async function analyzePhotos(input, ctx) {
   const llm = ctx.get?.('llm')
   const attachments = ctx.get?.('attachments')
@@ -281,27 +297,35 @@ async function analyzePhotos(input, ctx) {
   for (const path of paths) {
     const focus = focusList(input, path).filter(field => allowed.has(field))
     let lastError
-    let retried = false
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let didRetry = false
+    const maxTokens = Math.min(4096, 700 + focus.length * 300)
+    const maxAttempts = 3
+    const retryDelays = [0, 2000, 5000]
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (attempt > 0) {
+        didRetry = true
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]))
+      }
       try {
         const mediaType = MEDIA_BY_EXT[extname(path).toLowerCase()]
         if (!mediaType) throw new Error('不支持的图片扩展名')
         const data = new Uint8Array(await readFile(path))
         const ref = await attachments.saveImage({ data, mediaType, name: basename(path) })
         const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 120000)
+        const timer = setTimeout(() => controller.abort(), 180000)
+        const attemptMaxTokens = Math.min(4096, maxTokens + attempt * 200)
         let output = ''
         try {
           const chunks = llm.stream({
             provider: selection.provider,
             model: selection.model,
             temperature: 0.2,
-            maxTokens: 700,
+            maxTokens: attemptMaxTokens,
             signal: controller.signal,
             messages: [{
               role: 'user',
               content: [
-                { type: 'text', text: buildAnalyzePrompt(focus) },
+                { type: 'text', text: buildAnalyzePrompt(focus, attempt > 0) },
                 { type: 'image', attachment: ref },
               ],
             }],
@@ -309,6 +333,9 @@ async function analyzePhotos(input, ctx) {
           for await (const chunk of chunks) {
             if (chunk.type === 'text-delta') output += chunk.text
             else if (chunk.type === 'finish' && chunk.reason?.kind !== 'stop' && chunk.reason?.kind !== 'tool-calls') {
+              if (chunk.reason?.kind === 'length') {
+                throw new Error(`模型输出被截断（maxTokens ${attemptMaxTokens}），请减少关注项或重试`)
+              }
               throw new Error(chunk.reason?.failure?.message ?? `模型结束：${chunk.reason?.kind}`)
             }
           }
@@ -322,14 +349,13 @@ async function analyzePhotos(input, ctx) {
         break
       } catch (error) {
         lastError = error
-        retried = attempt === 1
       }
     }
     if (lastError !== undefined) {
       failedPaths.push({
         path,
-        error: lastError instanceof Error ? lastError.message : String(lastError),
-        retried,
+        error: errorText(lastError),
+        retried: didRetry,
       })
     }
   }
@@ -441,6 +467,7 @@ async function confirmObservations(input) {
       evidence_level: 'observed',
       path_verified: recordVerified,
       ...(typeof photo.role === 'string' && photo.role.length > 0 ? { role: photo.role } : {}),
+      ...(Array.isArray(photo.roles) && photo.roles.length > 0 ? { roles: photo.roles } : {}),
       ...(typeof photo.subject_id === 'string' && photo.subject_id.trim().length > 0 ? { subject_id: photo.subject_id.trim() } : {}),
       ...(sourcePath === undefined ? {} : { source_path: sourcePath }),
     }
@@ -553,10 +580,15 @@ export function apply(ctx) {
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
-      render: (_args, value) =>
-        value?.ok === true
-          ? text(`已产出 ${String(value.drafts?.length ?? 0)} 条 ai_draft`)
-          : text(`分析失败：${String(value?.error ?? '未知错误')}`),
+      render: (_args, value) => {
+        const failed = Array.isArray(value?.failed_paths) && value.failed_paths.length > 0
+          ? String(value.failed_paths[0]?.error ?? '')
+          : ''
+        if (value?.ok === true) {
+          return text(`已产出 ${String(value.drafts?.length ?? 0)} 条 ai_draft${failed.length > 0 ? `；失败：${failed}` : ''}`)
+        }
+        return text(`分析失败：${String(value?.error ?? '未知错误')}${failed.length > 0 ? `；${failed}` : ''}`)
+      },
     },
     async execute(args) {
       return analyzePhotos(args, ctx)

@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
         cacheRef.current.set(photo.path, {
           focus: [...photo.focus],
           values: { ...photo.values },
-          role: photo.role || '',
+          roles: Array.isArray(photo.roles) ? [...photo.roles] : (photo.role ? [photo.role] : []),
           subject_id: photo.subject_id || '',
         })
         try {
@@ -381,6 +381,8 @@ window.__ModuleLoader__.load({
         setNotice('')
         for (const [position, index] of indices.entries()) {
           if (cancelAnalyzeRef.current) break
+          if (position > 0) await new Promise(resolve => setTimeout(resolve, 1200))
+          if (cancelAnalyzeRef.current) break
           setAnalysis({ current: position + 1, total: indices.length })
           mutatePhoto(index, photo => ({ ...photo, status: 'analyzing', error: '' }))
           const controller = new AbortController()
@@ -474,7 +476,9 @@ window.__ModuleLoader__.load({
               previewUrl: previews[index] || '',
               focus,
               values,
-              role: typeof cached?.role === 'string' ? cached.role : '',
+              roles: Array.isArray(cached?.roles)
+                ? cached.roles.filter(value => ROLE_OPTIONS.some(option => option.value === value))
+                : (typeof cached?.role === 'string' && cached.role ? [cached.role] : []),
               subject_id: typeof cached?.subject_id === 'string' ? cached.subject_id : '',
               status: restored ? 'done' : 'pending',
               error: '',
@@ -505,6 +509,16 @@ window.__ModuleLoader__.load({
         mutatePhoto(index, photo => {
           if (photo.focus.includes(field)) return photo
           return { ...photo, focus: [...photo.focus, field], values: { ...photo.values, [field]: '' } }
+        })
+      }
+
+      const toggleRole = (index, value) => {
+        mutatePhoto(index, photo => {
+          const current = Array.isArray(photo.roles) ? [...photo.roles] : (photo.role ? [photo.role] : [])
+          const roles = current.includes(value)
+            ? current.filter(item => item !== value)
+            : [...current, value]
+          return { ...photo, roles }
         })
       }
 
@@ -544,6 +558,7 @@ window.__ModuleLoader__.load({
             focus: photo.focus,
             observations,
             ...(photo.role ? { role: photo.role } : {}),
+            ...(Array.isArray(photo.roles) && photo.roles.length > 0 ? { roles: photo.roles } : {}),
             ...(photo.focus.includes('subject') && photo.subject_id && photo.subject_id.trim().length > 0
               ? { subject_id: photo.subject_id.trim() }
               : {}),
@@ -743,12 +758,17 @@ window.__ModuleLoader__.load({
                   ),
                   h('div', { style: { opacity: 0.6, fontSize: '11px', marginTop: '2px' } }, `关注项 ${photo.focus.length} 项`),
                   h('div', { style: { marginTop: '6px' } },
-                    h('select', {
-                      value: photo.role || '',
-                      style: { font: 'inherit', fontSize: '11px', padding: '2px 6px', borderRadius: '6px', maxWidth: '100%' },
-                      onChange: event => mutatePhoto(index, item => ({ ...item, role: event.target.value })),
-                    },
-                      ...ROLE_OPTIONS.map(option => h('option', { key: option.value, value: option.value }, `用途：${option.label}`)),
+                    h('div', { style: { fontSize: '10px', opacity: 0.6, marginBottom: '3px' } }, '用途（可多选，也可不选）'),
+                    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } },
+                      ...ROLE_OPTIONS.filter(option => option.value).map(option => {
+                        const active = (Array.isArray(photo.roles) ? photo.roles : (photo.role ? [photo.role] : [])).includes(option.value)
+                        return h('button', {
+                          key: option.value,
+                          type: 'button',
+                          style: focusChipStyle(active),
+                          onClick: () => toggleRole(index, option.value),
+                        }, option.label)
+                      }),
                     ),
                   ),
                   photo.focus.includes('subject')
@@ -763,7 +783,7 @@ window.__ModuleLoader__.load({
               ),
               isFailed
                 ? h('div', { style: { color: 'var(--dsw-alias-label-secondary, #999)', marginBottom: '8px' } },
-                  `分析失败：${photo.error || '未知错误'}${photo.retried ? '（已自动重试 1 次）' : ''}`)
+                  `分析失败：${photo.error || '未知错误'}${photo.retried ? '（已自动重试）' : ''}`)
                 : null,
               isFailed && !showForm
                 ? h('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px' } },

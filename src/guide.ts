@@ -37,6 +37,11 @@ const ROLE_LABELS: Record<PhotoRole, string> = {
 
 const ROLE_ORDER: PhotoRole[] = ['style', 'lighting', 'color', 'composition', 'camera', 'setting', 'material', 'texture', 'atmosphere', 'subject', 'props', 'note']
 
+function photoRoles(photo: PhotoRecord): PhotoRole[] {
+  if (Array.isArray(photo.roles) && photo.roles.length > 0) return photo.roles
+  return photo.role === undefined ? [] : [photo.role]
+}
+
 /** 新版母版 guide-video 的 §5 输出契约；采集端只注入，不改写内容。 */
 const MASTER_SECTION_5 = [
   '## 5. 输出格式（死命令）',
@@ -281,7 +286,8 @@ export function renderGuide(pack: DirectorPack, packId: string): GuideResult {
   } else {
     s6.push(`参考照片（${photos.length} 张）：`)
     for (const photo of photos) {
-      const role = photo.role ? `（${ROLE_LABELS[photo.role]}）` : ''
+      const roles = photoRoles(photo)
+      const role = roles.length > 0 ? `（${roles.map(item => ROLE_LABELS[item]).join('/')}）` : ''
       s6.push(`- ${photo.photo_id}${role}：${photoDisplayPath(photo, packId)}`)
     }
     const palettePhotos = photos.filter(photo => (photo.observations.key_colors ?? []).length > 0)
@@ -289,18 +295,27 @@ export function renderGuide(pack: DirectorPack, packId: string): GuideResult {
       s6.push(`色板聚合：${pending('未采集')}`)
     } else {
       const groups = new Map<string, PhotoRecord[]>()
+      const unset: PhotoRecord[] = []
       for (const photo of palettePhotos) {
-        const key = photo.role ?? 'unset'
-        const list = groups.get(key) ?? []
-        list.push(photo)
-        groups.set(key, list)
+        const roles = photoRoles(photo)
+        if (roles.length === 0) {
+          unset.push(photo)
+          continue
+        }
+        for (const role of roles) {
+          const list = groups.get(role) ?? []
+          list.push(photo)
+          groups.set(role, list)
+        }
       }
-      for (const key of [...ROLE_ORDER, 'unset']) {
+      for (const key of ROLE_ORDER) {
         const list = groups.get(key)
         if (list === undefined) continue
         const colors = [...new Set(list.flatMap(photo => photo.observations.key_colors ?? []))]
-        const label = key === 'unset' ? '未指定' : ROLE_LABELS[key as PhotoRole]
-        s6.push(`色板聚合（${label}：${list.map(photo => photo.photo_id).join('/')}）：${colors.join(' / ')}`)
+        s6.push(`色板聚合（${ROLE_LABELS[key]}：${list.map(photo => photo.photo_id).join('/')}）：${colors.join(' / ')}`)
+      }
+      for (const photo of unset) {
+        s6.push(`色板聚合（${photo.photo_id}）：${(photo.observations.key_colors ?? []).join(' / ')}`)
       }
     }
   }
