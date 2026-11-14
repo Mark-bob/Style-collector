@@ -369,13 +369,14 @@ window.__ModuleLoader__.load({
         return { ...photo, focus, values, status: 'done', error: '', retried: false }
       }
 
-      const analyzeIndices = async (indices, list) => {
+      const analyzeIndices = async (indices, list, allowAutoRetry = true) => {
         if (indices.length === 0) {
           setPhase('reviewing')
           return
         }
         cancelAnalyzeRef.current = false
         const run = sessionRef.current
+        const failedNow = []
         setPhase('analyzing')
         setError('')
         setNotice('')
@@ -412,6 +413,7 @@ window.__ModuleLoader__.load({
                 error: String(detail),
                 retried: Boolean(data && data.failed_paths && data.failed_paths[0] && data.failed_paths[0].retried),
               }))
+              failedNow.push(index)
             } else {
               mutatePhoto(index, photo => applyDraft(photo, draft))
             }
@@ -422,18 +424,29 @@ window.__ModuleLoader__.load({
               break
             }
             mutatePhoto(index, photo => ({ ...photo, status: 'failed', error: err instanceof Error ? err.message : String(err) }))
+            failedNow.push(index)
           }
         }
         if (run !== sessionRef.current) return
         setAnalysis(null)
         analyzeAbortRef.current = null
         setPhase('reviewing')
+        if (allowAutoRetry && !cancelAnalyzeRef.current && failedNow.length > 0) {
+          setNotice(`${failedNow.length} 张分析失败，3 秒后自动补跑一次…`)
+          await new Promise(resolve => setTimeout(resolve, 3000))
+          if (cancelAnalyzeRef.current || run !== sessionRef.current) {
+            if (cancelAnalyzeRef.current) setNotice('已取消自动补跑；失败照片保留，可手动重试。')
+            return
+          }
+          await analyzeIndices(failedNow, list, false)
+          return
+        }
         if (cancelAnalyzeRef.current) setNotice('分析已取消；已完成的照片保留，其余可单独重试。')
       }
 
       const retryIndices = indices => {
         if (indices.length === 0) return
-        analyzeIndices(indices, photos)
+        analyzeIndices(indices, photos, false)
       }
 
       const cancelAnalysis = () => {
@@ -757,9 +770,15 @@ window.__ModuleLoader__.load({
                           : h('span', { style: { opacity: 0.6 } }, '待分析'),
                   ),
                   h('div', { style: { opacity: 0.6, fontSize: '11px', marginTop: '2px' } }, `关注项 ${photo.focus.length} 项`),
-                  h('div', { style: { marginTop: '6px' } },
-                    h('div', { style: { fontSize: '10px', opacity: 0.6, marginBottom: '3px' } }, '用途（可多选，也可不选）'),
-                    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px' } },
+                  h('details', { style: { marginTop: '6px' } },
+                    h('summary', { style: { cursor: 'pointer', fontSize: '11px', opacity: 0.8, userSelect: 'none' } },
+                      `用途：${
+                        (Array.isArray(photo.roles) ? photo.roles : (photo.role ? [photo.role] : []))
+                          .map(value => ROLE_OPTIONS.find(option => option.value === value)?.label)
+                          .filter(Boolean)
+                          .join('/') || '未指定'
+                      }（可多选）`),
+                    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' } },
                       ...ROLE_OPTIONS.filter(option => option.value).map(option => {
                         const active = (Array.isArray(photo.roles) ? photo.roles : (photo.role ? [photo.role] : [])).includes(option.value)
                         return h('button', {

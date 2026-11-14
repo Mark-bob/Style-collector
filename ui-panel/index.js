@@ -294,38 +294,34 @@ async function analyzePhotos(input, ctx) {
   const drafts = []
   const failedPaths = []
   const modelUsed = `${selection.provider}/${selection.model}`
-  for (const path of paths) {
-    const focus = focusList(input, path).filter(field => allowed.has(field))
-    let lastError
-    let didRetry = false
-    const maxTokens = Math.min(4096, 700 + focus.length * 300)
+  const chunkSize = 6
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  const analyzeChunk = async (ref, fields, markRetry) => {
     const maxAttempts = 3
     const retryDelays = [0, 2000, 5000]
+    let lastError
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) {
-        didRetry = true
-        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]))
+        markRetry()
+        await sleep(retryDelays[attempt])
       }
       try {
-        const mediaType = MEDIA_BY_EXT[extname(path).toLowerCase()]
-        if (!mediaType) throw new Error('不支持的图片扩展名')
-        const data = new Uint8Array(await readFile(path))
-        const ref = await attachments.saveImage({ data, mediaType, name: basename(path) })
+        const maxTokens = Math.min(4096, 700 + fields.length * 300)
         const controller = new AbortController()
         const timer = setTimeout(() => controller.abort(), 180000)
-        const attemptMaxTokens = Math.min(4096, maxTokens + attempt * 200)
         let output = ''
         try {
           const chunks = llm.stream({
             provider: selection.provider,
             model: selection.model,
             temperature: 0.2,
-            maxTokens: attemptMaxTokens,
+            maxTokens,
             signal: controller.signal,
             messages: [{
               role: 'user',
               content: [
-                { type: 'text', text: buildAnalyzePrompt(focus, attempt > 0) },
+                { type: 'text', text: buildAnalyzePrompt(fields, attempt > 0) },
                 { type: 'image', attachment: ref },
               ],
             }],
@@ -334,7 +330,7 @@ async function analyzePhotos(input, ctx) {
             if (chunk.type === 'text-delta') output += chunk.text
             else if (chunk.type === 'finish' && chunk.reason?.kind !== 'stop' && chunk.reason?.kind !== 'tool-calls') {
               if (chunk.reason?.kind === 'length') {
-                throw new Error(`模型输出被截断（maxTokens ${attemptMaxTokens}），请减少关注项或重试`)
+                throw new Error(`模型输出被截断（maxTokens ${maxTokens}），请减少关注项或重试`)
               }
               throw new Error(chunk.reason?.failure?.message ?? `模型结束：${chunk.reason?.kind}`)
             }
@@ -342,19 +338,45 @@ async function analyzePhotos(input, ctx) {
         } finally {
           clearTimeout(timer)
         }
-        const observations = parseDraft(output, focus)
+        const observations = parseDraft(output, fields)
         if (observations === null) throw new Error('无法解析模型输出')
-        drafts.push({ photo_path: path, focus, observations, evidence_level: 'ai_draft' })
-        lastError = undefined
-        break
+        return observations
       } catch (error) {
         lastError = error
       }
     }
-    if (lastError !== undefined) {
+    throw lastError ?? new Error('分析失败')
+  }
+
+  for (const path of paths) {
+    const focus = focusList(input, path).filter(field => allowed.has(field))
+    let didRetry = false
+    const markRetry = () => {
+      didRetry = true
+    }
+    try {
+      const mediaType = MEDIA_BY_EXT[extname(path).toLowerCase()]
+      if (!mediaType) throw new Error('不支持的图片扩展名')
+      const data = new Uint8Array(await readFile(path))
+      const ref = await attachments.saveImage({ data, mediaType, name: basename(path) })
+      const observations = {}
+      const chunks = []
+      for (let index = 0; index < focus.length; index += chunkSize) {
+        chunks.push(focus.slice(index, index + chunkSize))
+      }
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        if (chunkIndex > 0) await sleep(800)
+        try {
+          Object.assign(observations, await analyzeChunk(ref, chunk, markRetry))
+        } catch (error) {
+          throw new Error(`${chunk.join('/')}：${errorText(error)}`)
+        }
+      }
+      drafts.push({ photo_path: path, focus, observations, evidence_level: 'ai_draft' })
+    } catch (error) {
       failedPaths.push({
         path,
-        error: errorText(lastError),
+        error: errorText(error),
         retried: didRetry,
       })
     }

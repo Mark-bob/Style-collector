@@ -11,7 +11,8 @@ idle → uploading → reviewing（配置 focus）→ analyzing → reviewing �
 ```
 
 - 上传后先在每张图卡片上**勾选**自己的 focus（默认 `light_direction/color_palette/composition`；可选 `perspective/setting/material/texture/atmosphere/subject/props/note`），再点“开始分析”。
-- 每张图**独立**分析；每张失败自动重试 1 次（最多 2 次）。AI 只分析该图勾选的项，focus 外字段 Host 端过滤。
+- 每张图**独立**分析；关注项超过 6 个时自动拆成多批，每批最多 6 项，结果合并。单批最多尝试 3 次（间隔 2s / 5s）。
+- 整批分析结束后，失败图会在 3 秒后自动补跑一次；仍失败则保留红色失败卡片，可手动重试。
 - `subject`（人物/主体）是可选关注项，guide §4 会多一行“人物/主体”。
 - 审核面板分成功区/失败区：失败卡片红底红框，显示错误原因，可“重试分析”或“手动填写”。
 - 只有点“确认全部并生成 guide”才写入采集端；未确认内容不落库。
@@ -37,7 +38,7 @@ pnpm build
 - 打开后是**居中模态框**（portaled to body，带遮罩），宽度 `min(900px, 96vw)`，高度 `max-height: 80vh`，头/底固定、内容区滚动。
 - 顶部步骤条：`选图 → 关注项 → 分析 → 审核 → 生成 → 下载`，当前高亮、已完成打勾；上传后先停在“关注项”，分析完进入“审核”。
 - 每张图一张卡片：96×96 缩略图（圆角+边框）、**该图自己的** focus 勾选项（11 个可选，勾选后显示对应输入框）、字段两列自适应排版。
-- 每张图还有“用途”多选标签：画风 / 灯光 / 色彩 / 构图 / 视角 / 场景 / 材质 / 质感 / 氛围 / 人物 / 道具 / 备注。一张图可同时选多个（如氛围 + 色彩），只影响 guide §6 标注与色板分组，不参与 AI 观察；不选则不标用途，色板按图单独输出。
+- 每张图还有折叠的“用途”多选区：画风 / 灯光 / 色彩 / 构图 / 视角 / 场景 / 材质 / 质感 / 氛围 / 人物 / 道具 / 备注。默认只显示已选摘要，点开后可多选（如氛围 + 色彩）；只影响 guide §6 标注，不参与 AI 观察。
 - 勾选“人物/主体”时出现可选“主体编号”输入：同一人物填相同编号（如 `A`），guide §4 会把它们聚合成 `主体 A（P01/P02）`；不填则逐图显示。
 - 提示：“每张图可指定不同关注项，AI 只分析你勾选的项。”
 - 某张图 focus 为空：卡片红框、顶部红字“请为每张图至少选一个关注项”，确认按钮禁用。
@@ -118,7 +119,7 @@ POST /api/director-ui/discard   application/json: { pack_id }  仅 ui-temp-<time
 
 - 上传：合法 png 返回绝对路径；txt / 11MB / `../evil.png` 均 400。
 - `analyzePhotos` 用 mock llm/attachments 跑通：正确解析 JSON、过滤非法 hex、模型 error 时返回 `failed_paths`。
-- 重试：第一次模型失败、第二次成功 → 产出 draft；两次都失败 → `failed_paths [{ retried: true }]`。
+- 重试：第一次失败、第二次成功 → 产出 draft；三次都失败 → `failed_paths [{ retried: true }]`，并保留 cause 链。
 - `confirm_observations`：2 张照片生成 guide；§4 用确认值，§6 输出 `./photos/P01.jpg` 等包内相对路径，§2/§3 `[待采集]`，头部 `package_type: photo_reference`。
 - 生命周期：confirm 后 pack 目录出现 `photos/P01.jpg`、`photos/P02.jpg`；`photos.jsonl` 的 `path` 为 `photos/...`，`source_path` 为原始上传绝对路径。
 - discard：删除 `ui-temp-*` 包 + 该包引用过的 2 个上传原图，`deleted_uploads: 2`；其他包/归档文件不受影响。
@@ -128,20 +129,20 @@ POST /api/director-ui/discard   application/json: { pack_id }  仅 ui-temp-<time
 - 每图独立 focus：P01 只留 `light_direction`、P02 只留 `subject` → §4 光线只有 P01，人物/主体只有 P02；P01 的 subject、P02 的 light_direction 均为 `[未采集]`。
 - prompt 只列所选 key；模型多返回的字段被过滤（subject-only 的 draft 只有 subject）。
 - 新增字段渲染：`perspective/texture` 与 `setting/props` 分别进 §4“视角/机位、质感/颗粒、场景/环境、道具/陈设”；未勾选字段为 `[未采集]`。
-- 角色用途：P01 同时选 `atmosphere` + `color` → §6 输出 `P01（氛围/色彩）`；色板分别在“色彩”“氛围”两组出现；P02 `subject` → `P02（人物）`。
-- 未选用途：不再把所有未选图合并成一个“未指定”色板，改为逐图 `色板聚合（P01）`、`色板聚合（P02）`。
+- 角色用途：P01 同时选 `atmosphere` + `color` → §6 输出 `P01（氛围/色彩）`；色板合并成一行 `色板聚合（P01，氛围/色彩）：…`，不再按用途重复。
+- 未选用途：逐图 `色板聚合（P01）`、`色板聚合（P02）`。
 - `subject_id`：P01/P02 都填 `A` → §4 输出 `主体 A（P01/P02）：中年男性，正面 / 同一个人，侧面`；不填 → 保持 `P01：…`、`P02：…` 两行；混合时同编号聚合、其余逐图。
 - 非法 role/roles → `照片 P01 不合法：roles 非法：bogus（允许：style, lighting, composition, prop）`。
 - §7 只有一条“observations 由用户手动录入…”+ 一条自动追加的“静态照片提取…”。
 - 同 `photo_id` 连跑两次 confirm：`photos.jsonl` 行数 2 → 2；新增 P03 后 3 行。
-- `pnpm build` exit 0。
+- `pnpm build` exit 0；`pnpm test`（`test/smoke.mjs`）覆盖多 role、色板单行、subject 聚合。
 
 ## 已知边界
 
 - **每张图一次模型调用**：token 成本随照片数线性增长；有取消按钮，但取消只中止浏览器请求，Host 当前那张可能仍会跑完。
-- 关注项越多输出越长：`maxTokens = min(4096, 700 + 300 × 字段数)`，重试再 +200；避免多字段被截断。
-- 单张图最多尝试 3 次：第 2 次前等 2s、第 3 次前等 5s；失败信息会拼出底层 cause 链（如 `transport failed ← fetch failed`），方便定位网络/Provider 问题。
-- 多图批处理逐张串行：图片之间间隔 1200ms，降低连续请求触发的限流/空转。
+- 关注项 >6 自动分块：11 项 → 6 + 5，两次调用各自解析后合并；单块 `maxTokens = min(4096, 700 + 300 × 块内字段数)`。
+- 单块最多尝试 3 次：第 2 次前等 2s、第 3 次前等 5s；失败信息会拼出底层 cause 链（如 `transport failed ← fetch failed`）。
+- 多图批处理逐张串行：图片之间间隔 1200ms，整批失败后再等 3s 自动补跑一次。
 - 默认模型可能不支持图片；会自动回退到第一个 `image` modality 模型，若没有则 error。
 - 模型输出按自由文本里的第一个 `{...}` 解析；输出不是 JSON 时该图记为失败。
 - 部分照片失败时其余仍进入审核；失败项 focus 为空，需手动补。

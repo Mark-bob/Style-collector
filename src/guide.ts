@@ -35,8 +35,6 @@ const ROLE_LABELS: Record<PhotoRole, string> = {
   note: '备注',
 }
 
-const ROLE_ORDER: PhotoRole[] = ['style', 'lighting', 'color', 'composition', 'camera', 'setting', 'material', 'texture', 'atmosphere', 'subject', 'props', 'note']
-
 function photoRoles(photo: PhotoRecord): PhotoRole[] {
   if (Array.isArray(photo.roles) && photo.roles.length > 0) return photo.roles
   return photo.role === undefined ? [] : [photo.role]
@@ -294,28 +292,10 @@ export function renderGuide(pack: DirectorPack, packId: string): GuideResult {
     if (palettePhotos.length === 0) {
       s6.push(`色板聚合：${pending('未采集')}`)
     } else {
-      const groups = new Map<string, PhotoRecord[]>()
-      const unset: PhotoRecord[] = []
       for (const photo of palettePhotos) {
         const roles = photoRoles(photo)
-        if (roles.length === 0) {
-          unset.push(photo)
-          continue
-        }
-        for (const role of roles) {
-          const list = groups.get(role) ?? []
-          list.push(photo)
-          groups.set(role, list)
-        }
-      }
-      for (const key of ROLE_ORDER) {
-        const list = groups.get(key)
-        if (list === undefined) continue
-        const colors = [...new Set(list.flatMap(photo => photo.observations.key_colors ?? []))]
-        s6.push(`色板聚合（${ROLE_LABELS[key]}：${list.map(photo => photo.photo_id).join('/')}）：${colors.join(' / ')}`)
-      }
-      for (const photo of unset) {
-        s6.push(`色板聚合（${photo.photo_id}）：${(photo.observations.key_colors ?? []).join(' / ')}`)
+        const roleText = roles.length > 0 ? `，${roles.map(item => ROLE_LABELS[item]).join('/')}` : ''
+        s6.push(`色板聚合（${photo.photo_id}${roleText}）：${(photo.observations.key_colors ?? []).join(' / ')}`)
       }
     }
   }

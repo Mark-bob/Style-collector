@@ -38,7 +38,7 @@
 - `subject_id`（可选）：同一主体填相同编号（如 `A`）。guide §4“人物/主体”把同编号照片聚合成 `主体 A（P01/P02）：…`，不填则逐图显示。
 - `_ui-uploads` 只是中转区；`cleanup_uploads` 可清理无引用文件，UI 的 `discard` 会删除该临时包引用过的上传原图。
 - focus 取值：`light_direction` / `color_palette` / `composition` / `perspective` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；`color_palette` 对应 `observations.key_colors`（hex）。
-- `roles`（可选，多选）：`style` / `lighting` / `color` / `composition` / `camera` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；一张图可同时归属多个用途。guide §6 标注 `（氛围/色彩）`，色板在每个用途组各出现一次；未选用途时逐图输出 `色板聚合（P01）`，不再合并成“未指定”。旧值 `role` 自动并入，`prop` 归一为 `props`。
+- `roles`（可选，多选）：`style` / `lighting` / `color` / `composition` / `camera` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；一张图可同时归属多个用途。guide §6 标注 `P01（氛围/色彩）`，色板一行输出 `色板聚合（P01，氛围/色彩）：…`；未选用途时同样逐图一行。旧值 `role` 自动并入，`prop` 归一为 `props`。
 - guide 里未在 `focus` 中列出的字段标 `[未采集]`，不是 `[待采集]`。
 - guide §6 路径按 `path_verified` 分支：验证过且在包目录内输出 `./相对路径`，验证过但在包外输出绝对路径，未验证输出 `[路径未验证：文件名]`；色板聚合注明提供 hex 的照片。
 
