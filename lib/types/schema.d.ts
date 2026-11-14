@@ -52,6 +52,10 @@ export interface PhotoRecord {
     evidence_level: 'observed';
     path_verified?: boolean;
     role?: PhotoRole;
+    /** 同一主体的编号；多张图填相同值时 guide §4 人物/主体聚合。 */
+    subject_id?: string;
+    /** 原始上传文件绝对路径，仅供清理/审计；guide 不输出。 */
+    source_path?: string;
 }
 export interface DecisionHeuristic {
     situation: string;

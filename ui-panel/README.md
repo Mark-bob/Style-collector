@@ -7,7 +7,7 @@
 ## 当前流程
 
 ```text
-idle → uploading → reviewing（配置 focus）→ analyzing → reviewing → confirming → done / error
+idle → uploading → reviewing（配置 focus）→ analyzing → reviewing → confirming → preview → done / error
 ```
 
 - 上传后先在每张图卡片上**勾选**自己的 focus（默认 `light_direction/color_palette/composition`；可选 `perspective/setting/material/texture/atmosphere/subject/props/note`），再点“开始分析”。
@@ -38,6 +38,7 @@ pnpm build
 - 顶部步骤条：`选图 → 关注项 → 分析 → 审核 → 生成 → 下载`，当前高亮、已完成打勾；上传后先停在“关注项”，分析完进入“审核”。
 - 每张图一张卡片：96×96 缩略图（圆角+边框）、**该图自己的** focus 勾选项（11 个可选，勾选后显示对应输入框）、字段两列自适应排版。
 - 每张图还有“用途”下拉：未指定 / 画风 / 灯光 / 色彩 / 构图 / 视角 / 场景 / 材质 / 质感 / 氛围 / 人物 / 道具 / 备注。用途只影响 guide §6 标注与色板分组，不参与 AI 观察。
+- 勾选“人物/主体”时出现可选“主体编号”输入：同一人物填相同编号（如 `A`），guide §4 会把它们聚合成 `主体 A（P01/P02）`；不填则逐图显示。
 - 提示：“每张图可指定不同关注项，AI 只分析你勾选的项。”
 - 某张图 focus 为空：卡片红框、顶部红字“请为每张图至少选一个关注项”，确认按钮禁用。
 - 关闭面板（右上角 × 或点遮罩）会中止进行中的上传/分析/确认并回到开始页；已填内容仍按路径留在 sessionStorage，重新选同样图片可恢复。
@@ -45,7 +46,9 @@ pnpm build
 - 分析中显示“第 N/M 张分析中…”，每张卡片独立状态（⏳/✓/✗）。
 - 按钮主次：主按钮主题色；次按钮灰底；危险操作（重新选图/重新开始）红字无底。
 - 全局反模式输入 + “本包明确无反模式”勾选。
-- 底部主按钮：`确认全部并生成 guide`；所有照片字段有值且反模式已填/已勾选才启用。
+- 设置底部主按钮：`确认全部并生成 guide`；所有照片字段有值且反模式已填/已勾选才启用。
+- 生成成功后进入 **preview**（下载前预览）：只显示 §4 与 §7，按钮“返回修改 / 确认下载”；确认后才下载完整 `.md` 并进入 done。
+- 审核页顶部显示“本次分析使用：`provider/model`”（来自 `analyze_photos_draft` 的 `model_used`）。
 
 ## 容错与回退
 
@@ -59,7 +62,7 @@ pnpm build
 | done | 重新开始 | 清空 state + 缓存，并丢弃 `ui-temp-*` 包 |
 | error | 返回修改 / 重试 | 回上一个可用状态 / 重试当前操作 |
 
-`done` 的“重新开始”会 `POST /api/director-ui/discard` 删除 `ui-temp-<timestamp>` 目录；其他 pack_id 一律拒绝。
+`done` 的“重新开始”会 `POST /api/director-ui/discard` 删除 `ui-temp-<timestamp>` 目录，并删除该包引用过的 `_ui-uploads` 原图（只删本包引用，不动其他包）；其他 pack_id 一律拒绝。返回 `{ ok, pack_id, deleted_uploads }`。
 
 ## Host 工具
 
@@ -70,7 +73,7 @@ pnpm build
 | `photo_paths` | string[] | 是 | 上传返回的绝对路径 |
 | `focus_per_photo` | object | 否 | 路径 → focus 数组；默认 light_direction/color_palette/composition |
 
-行为：`attachments.saveImage` 落为附件 → `llm.stream` 逐张调用 → 解析 JSON → 返回 `{ ok, drafts:[{photo_path,focus,observations,evidence_level:"ai_draft"}], warnings, failed_paths }`。不写采集端。prompt 明确“只分析以下关注项：…，不要分析或输出其他项”，解析后只保留 focus 内字段。
+行为：`attachments.saveImage` 落为附件 → `llm.stream` 逐张调用 → 解析 JSON → 返回 `{ ok, drafts:[{photo_path,focus,observations,evidence_level:"ai_draft"}], warnings, failed_paths, model_used }`。不写采集端。prompt 明确“只分析以下关注项：…，不要分析或输出其他项”，解析后只保留 focus 内字段。`model_used` 为 `provider/model`，UI 在审核页显示。
 
 模型选择：先看 `agentDefaultModel.currentSelection()` 是否支持 `image` modality；否则遍历 `llm.listProviders()` / `listModels()` 找第一个多模态模型；都没有则返回“没有可用的多模态模型”。
 
@@ -83,7 +86,7 @@ pnpm build
 | `anti_patterns` | string[] | 是 | 至少一条 |
 | `honest_limits_auto` | string[] | 否 | 只传 `observations 由用户手动录入并审核确认。`；静态照片那句由 renderGuide 自动追加 |
 
-按 `photo_id` 幂等写 `photos.jsonl`（存在覆盖、不存在追加）→ 写 anti/honest → 校验 → renderGuide → 返回 `{ ok, pack_id, guide_md, guide_path, summary }`。
+按 `photo_id` 幂等写 `photos.jsonl`（存在覆盖、不存在追加）→ 把上传原图复制到 `<pack>/photos/<id>.<ext>`，`path` 改为 `photos/...`、`source_path` 保留原上传路径 → 写 anti/honest → 校验 → renderGuide → 返回 `{ ok, pack_id, guide_md, guide_path, summary }`。guide §6 输出 `./photos/...`。
 
 ### export_guide
 
@@ -109,11 +112,17 @@ POST /api/director-ui/discard   application/json: { pack_id }  仅 ui-temp-<time
 - 上传：合法 png 返回绝对路径；txt / 11MB / `../evil.png` 均 400。
 - `analyzePhotos` 用 mock llm/attachments 跑通：正确解析 JSON、过滤非法 hex、模型 error 时返回 `failed_paths`。
 - 重试：第一次模型失败、第二次成功 → 产出 draft；两次都失败 → `failed_paths [{ retried: true }]`。
-- `confirm_observations`：2 张照片生成 guide；§4 用确认值，§6 绝对路径，§2/§3 `[待采集]`，头部 `package_type: photo_reference`。
+- `confirm_observations`：2 张照片生成 guide；§4 用确认值，§6 输出 `./photos/P01.jpg` 等包内相对路径，§2/§3 `[待采集]`，头部 `package_type: photo_reference`。
+- 生命周期：confirm 后 pack 目录出现 `photos/P01.jpg`、`photos/P02.jpg`；`photos.jsonl` 的 `path` 为 `photos/...`，`source_path` 为原始上传绝对路径。
+- discard：删除 `ui-temp-*` 包 + 该包引用过的 2 个上传原图，`deleted_uploads: 2`；其他包/归档文件不受影响。
+- `cleanup_uploads`：dry-run 扫描到 4 个文件，3 个被引用（含归档包），只报告 1 个孤儿；`confirm=true` 只删孤儿，归档引用保留。
+- 3-B：`analyzePhotos` 返回 `model_used: "mock/m"`；UI 审核页顶部显示该值。
+- 3-A：confirm 成功进入 preview，preview 只渲染 §4/§7 提取段；点“确认下载”才触发 Blob 下载并进入 done。UI 下载行为仍需重启后目视确认。
 - 每图独立 focus：P01 只留 `light_direction`、P02 只留 `subject` → §4 光线只有 P01，人物/主体只有 P02；P01 的 subject、P02 的 light_direction 均为 `[未采集]`。
 - prompt 只列所选 key；模型多返回的字段被过滤（subject-only 的 draft 只有 subject）。
 - 新增字段渲染：`perspective/texture` 与 `setting/props` 分别进 §4“视角/机位、质感/颗粒、场景/环境、道具/陈设”；未勾选字段为 `[未采集]`。
 - 角色用途：P01 `style`、P02 `lighting` → §6 输出 `P01（画风）`、`P02（灯光）`；色板按用途分组，不跨用途合并。
+- `subject_id`：P01/P02 都填 `A` → §4 输出 `主体 A（P01/P02）：中年男性，正面 / 同一个人，侧面`；不填 → 保持 `P01：…`、`P02：…` 两行；混合时同编号聚合、其余逐图。
 - 非法 role → `照片 P01 不合法：role 非法：bogus（允许：style, lighting, composition, prop）`。
 - §7 只有一条“observations 由用户手动录入…”+ 一条自动追加的“静态照片提取…”。
 - 同 `photo_id` 连跑两次 confirm：`photos.jsonl` 行数 2 → 2；新增 P03 后 3 行。
@@ -121,7 +130,7 @@ POST /api/director-ui/discard   application/json: { pack_id }  仅 ui-temp-<time
 
 ## 已知边界
 
-- **每张图一次模型调用**：token 成本随照片数线性增长；没有批量单次调用，也没有取消按钮。
+- **每张图一次模型调用**：token 成本随照片数线性增长；有取消按钮，但取消只中止浏览器请求，Host 当前那张可能仍会跑完。
 - 默认模型可能不支持图片；会自动回退到第一个 `image` modality 模型，若没有则 error。
 - 模型输出按自由文本里的第一个 `{...}` 解析；输出不是 JSON 时该图记为失败。
 - 部分照片失败时其余仍进入审核；失败项 focus 为空，需手动补。

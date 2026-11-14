@@ -90,6 +90,10 @@ export interface PhotoRecord {
   evidence_level: 'observed'
   path_verified?: boolean
   role?: PhotoRole
+  /** 同一主体的编号；多张图填相同值时 guide §4 人物/主体聚合。 */
+  subject_id?: string
+  /** 原始上传文件绝对路径，仅供清理/审计；guide 不输出。 */
+  source_path?: string
 }
 
 export interface DecisionHeuristic {
@@ -325,9 +329,19 @@ export function validatePhotoInput(raw: unknown): ValidationResult<PhotoRecord> 
   const issues: string[] = []
   const photoId = textField(raw['photo_id'], 'photo_id', 40, issues, true)
   const path = textField(raw['path'], 'path', 500, issues, true)
-  if (path !== undefined && !/^([A-Za-z]:[\\/]|\\\\|\/)/.test(path)) {
-    issues.push('path 必须是绝对路径')
+  if (path !== undefined) {
+    const absolute = /^([A-Za-z]:[\\/]|\\\\|\/)/.test(path)
+    const packRelative = /^\.?\/?photos\/[^/\\]+$/.test(path) && !path.includes('..')
+    if (!absolute && !packRelative) {
+      issues.push('path 必须是绝对路径或 photos/ 下的相对路径')
+    }
   }
+  const sourcePath = textField(raw['source_path'], 'source_path', 500, issues)
+  if (sourcePath !== undefined) {
+    if (!/^([A-Za-z]:[\\/]|\\\\|\/)/.test(sourcePath)) issues.push('source_path 必须是绝对路径')
+    if (sourcePath.includes('..')) issues.push('source_path 不能包含 ..')
+  }
+  const subjectId = textField(raw['subject_id'], 'subject_id', 40, issues)
   const focusRaw = raw['focus']
   const focus: PhotoFocus[] = []
   if (!Array.isArray(focusRaw) || focusRaw.length === 0) {
@@ -395,6 +409,8 @@ export function validatePhotoInput(raw: unknown): ValidationResult<PhotoRecord> 
       evidence_level: 'observed',
       ...(pathVerified === undefined ? {} : { path_verified: pathVerified }),
       ...(role === undefined ? {} : { role }),
+      ...(subjectId === undefined ? {} : { subject_id: subjectId }),
+      ...(sourcePath === undefined ? {} : { source_path: sourcePath }),
     },
   }
 }

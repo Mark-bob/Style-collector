@@ -5,8 +5,8 @@
  * remains the single writer of packs; observations only come from the user.
  */
 
-import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { access, copyFile, mkdir, readFile, readdir, rm, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   createPack,
@@ -73,6 +73,31 @@ async function exists(path) {
     return true
   } catch {
     return false
+  }
+}
+
+function uploadsRoot() {
+  return join(resolveDshHome(), 'director-style-packs', '_ui-uploads')
+}
+
+function isUnder(child, parent) {
+  const rel = relative(parent, child)
+  return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+function safePhotoStem(id) {
+  return String(id).replace(/[^A-Za-z0-9_-]/g, '_') || 'photo'
+}
+
+async function removeEmptyParents(file, root) {
+  let dir = dirname(file)
+  while (isUnder(dir, root)) {
+    try {
+      await rmdir(dir)
+    } catch {
+      break
+    }
+    dir = dirname(dir)
   }
 }
 
@@ -252,6 +277,7 @@ async function analyzePhotos(input, ctx) {
   const allowed = new Set(['light_direction', 'color_palette', 'composition', 'perspective', 'setting', 'material', 'texture', 'atmosphere', 'subject', 'props', 'note'])
   const drafts = []
   const failedPaths = []
+  const modelUsed = `${selection.provider}/${selection.model}`
   for (const path of paths) {
     const focus = focusList(input, path).filter(field => allowed.has(field))
     let lastError
@@ -307,12 +333,13 @@ async function analyzePhotos(input, ctx) {
       })
     }
   }
-  if (drafts.length === 0) return { ok: false, error: '全部照片分析失败', failed_paths: failedPaths }
+  if (drafts.length === 0) return { ok: false, error: '全部照片分析失败', failed_paths: failedPaths, model_used: modelUsed }
   return {
     ok: true,
     drafts,
     warnings: failedPaths.length > 0 ? [`${failedPaths.length} 张照片分析失败`] : [],
     failed_paths: failedPaths,
+    model_used: modelUsed,
   }
 }
 
@@ -335,8 +362,24 @@ async function handleDiscard(request) {
   }
   const packId = typeof body?.pack_id === 'string' ? body.pack_id.trim() : ''
   if (!/^ui-temp-\d+$/.test(packId)) return fail(400, '只允许丢弃 ui-temp-<timestamp> 临时包')
+  const photos = await readPhotosJsonl(packId)
+  const root = uploadsRoot()
+  const deleted = new Set()
+  for (const photo of photos) {
+    for (const candidate of [photo.source_path, photo.path]) {
+      if (typeof candidate !== 'string' || !isAbsolute(candidate)) continue
+      if (!isUnder(candidate, root)) continue
+      try {
+        await unlink(candidate)
+        deleted.add(resolve(candidate))
+        await removeEmptyParents(candidate, root)
+      } catch {
+        // 文件已不存在时忽略
+      }
+    }
+  }
   await rm(packDir(packId), { recursive: true, force: true })
-  return json(200, { ok: true, pack_id: packId })
+  return json(200, { ok: true, pack_id: packId, deleted_uploads: deleted.size })
 }
 
 async function confirmObservations(input) {
@@ -360,16 +403,46 @@ async function confirmObservations(input) {
   const existing = await readPhotosJsonl(packId)
   const byId = new Map(existing.map(photo => [photo.photo_id, photo]))
   for (const [index, photo] of photos.entries()) {
+    const photoId = typeof photo.photo_id === 'string' && photo.photo_id.trim().length > 0
+      ? photo.photo_id.trim()
+      : `P${String(index + 1).padStart(2, '0')}`
+    const rawPath = String(photo.path ?? '')
+    let recordPath = rawPath
+    let recordVerified = false
+    let sourcePath
+    const packRelative = /^\.?\/?photos\/[^/\\]+$/.test(rawPath) && !rawPath.includes('..')
+    if (packRelative) {
+      recordPath = rawPath.replace(/^\.\//, '')
+      recordVerified = await exists(join(packDir(packId), recordPath))
+      if (typeof photo.source_path === 'string' && photo.source_path.length > 0) sourcePath = photo.source_path
+    } else if (/^([A-Za-z]:[\\/]|\\\\|\/)/.test(rawPath) && (await exists(rawPath))) {
+      const ext = extname(rawPath) || '.jpg'
+      const dir = join(packDir(packId), 'photos')
+      await mkdir(dir, { recursive: true })
+      const name = `${safePhotoStem(photoId)}${ext}`
+      const dest = join(dir, name)
+      try {
+        if (resolve(rawPath) !== resolve(dest)) await copyFile(rawPath, dest)
+      } catch (error) {
+        return {
+          ok: false,
+          error: `复制照片 ${photoId} 失败：${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+      recordPath = `photos/${name}`
+      recordVerified = true
+      sourcePath = rawPath
+    }
     const record = {
-      photo_id: typeof photo.photo_id === 'string' && photo.photo_id.trim().length > 0
-        ? photo.photo_id.trim()
-        : `P${String(index + 1).padStart(2, '0')}`,
-      path: photo.path,
+      photo_id: photoId,
+      path: recordPath,
       focus: photo.focus,
       observations: photo.observations,
       evidence_level: 'observed',
-      path_verified: await exists(String(photo.path ?? '')),
+      path_verified: recordVerified,
       ...(typeof photo.role === 'string' && photo.role.length > 0 ? { role: photo.role } : {}),
+      ...(typeof photo.subject_id === 'string' && photo.subject_id.trim().length > 0 ? { subject_id: photo.subject_id.trim() } : {}),
+      ...(sourcePath === undefined ? {} : { source_path: sourcePath }),
     }
     const validated = validatePhotoInput(record)
     if (!validated.ok) {

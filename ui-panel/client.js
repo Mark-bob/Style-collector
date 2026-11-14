@@ -37,8 +37,8 @@ window.__ModuleLoader__.load({
     ]
     const STEPS = ['选图', '关注项', '分析', '审核', '生成', '下载']
     const LABELS = {
-      light_direction: '光线方向',
-      color_palette: '色板（hex，逗号分隔）',
+      light_direction: '光线',
+      color_palette: '色彩',
       composition: '构图',
       perspective: '视角/机位',
       setting: '场景/环境',
@@ -48,6 +48,19 @@ window.__ModuleLoader__.load({
       subject: '人物/主体',
       props: '道具/陈设',
       note: '备注',
+    }
+    const FIELD_HINTS = {
+      light_direction: '主光方向、硬/软、阴影',
+      color_palette: 'hex，逗号分隔，如 #8A6B3F, #1B2A3A',
+      composition: '构图、前景、对称、留白',
+      perspective: '机位、视角、焦段',
+      setting: '场景、环境、地点',
+      material: '材质、表面',
+      texture: '质感、颗粒、细节',
+      atmosphere: '氛围、色调',
+      subject: '是谁、穿什么、姿态、表情',
+      props: '道具、陈设',
+      note: '一句客观备注',
     }
     const PLACEHOLDERS = {
       light_direction: '主光从右侧窗户来，硬光，暗部保留木纹',
@@ -145,11 +158,31 @@ window.__ModuleLoader__.load({
       resize: 'vertical',
     }
 
+    const metaInputStyle = {
+      width: '100%',
+      boxSizing: 'border-box',
+      padding: '4px 7px',
+      marginTop: '6px',
+      borderRadius: '7px',
+      border: '1px solid var(--dsw-alias-border-l1)',
+      background: 'transparent',
+      color: 'inherit',
+      font: 'inherit',
+      fontSize: '11px',
+    }
+
     function parseColors(value) {
       return String(value || '')
         .split(/[,\s]+/)
         .map(item => item.trim())
         .filter(item => /^#[0-9A-Fa-f]{6}$/.test(item))
+    }
+
+    function guideSection(markdown, title) {
+      const start = markdown.indexOf(title)
+      if (start < 0) return ''
+      const end = markdown.indexOf('\n## ', start + title.length)
+      return markdown.slice(start, end < 0 ? undefined : end).trim()
     }
 
     function PhotoIcon(props) {
@@ -217,6 +250,7 @@ window.__ModuleLoader__.load({
       const [noAnti, setNoAnti] = useState(false)
       const [guide, setGuide] = useState('')
       const [summary, setSummary] = useState(null)
+      const [modelUsed, setModelUsed] = useState('')
       const [packId, setPackId] = useState('')
       const [notice, setNotice] = useState('')
       const [error, setError] = useState('')
@@ -232,7 +266,12 @@ window.__ModuleLoader__.load({
       const sessionRef = useRef(0)
 
       const persist = photo => {
-        cacheRef.current.set(photo.path, { focus: [...photo.focus], values: { ...photo.values }, role: photo.role || '' })
+        cacheRef.current.set(photo.path, {
+          focus: [...photo.focus],
+          values: { ...photo.values },
+          role: photo.role || '',
+          subject_id: photo.subject_id || '',
+        })
         try {
           window.sessionStorage.setItem(CACHE_KEY, JSON.stringify(Object.fromEntries(cacheRef.current)))
         } catch {
@@ -275,6 +314,7 @@ window.__ModuleLoader__.load({
         setNoAnti(false)
         setGuide('')
         setSummary(null)
+        setModelUsed('')
         setNotice('')
         setError('')
         setErrorKind('')
@@ -292,6 +332,7 @@ window.__ModuleLoader__.load({
         setPhase('idle')
         setGuide('')
         setSummary(null)
+        setModelUsed('')
         setNotice('')
         setError('')
         setErrorKind('')
@@ -357,6 +398,7 @@ window.__ModuleLoader__.load({
             })
             const data = await response.json().catch(() => null)
             if (run !== sessionRef.current) return
+            if (data && typeof data.model_used === 'string' && data.model_used.length > 0) setModelUsed(data.model_used)
             const draft = data && Array.isArray(data.drafts) ? data.drafts[0] : undefined
             if (!response.ok || !data || data.ok !== true || draft === undefined) {
               const detail = (data && data.failed_paths && data.failed_paths[0] && data.failed_paths[0].error)
@@ -405,6 +447,7 @@ window.__ModuleLoader__.load({
         revokePreviews(photos)
         setGuide('')
         setSummary(null)
+        setModelUsed('')
         setError('')
         setNotice('')
         setPhase('uploading')
@@ -432,6 +475,7 @@ window.__ModuleLoader__.load({
               focus,
               values,
               role: typeof cached?.role === 'string' ? cached.role : '',
+              subject_id: typeof cached?.subject_id === 'string' ? cached.subject_id : '',
               status: restored ? 'done' : 'pending',
               error: '',
               retried: false,
@@ -468,7 +512,12 @@ window.__ModuleLoader__.load({
         mutatePhoto(index, photo => {
           const values = { ...photo.values }
           delete values[field]
-          return { ...photo, focus: photo.focus.filter(item => item !== field), values }
+          return {
+            ...photo,
+            focus: photo.focus.filter(item => item !== field),
+            values,
+            ...(field === 'subject' ? { subject_id: '' } : {}),
+          }
         })
       }
 
@@ -495,6 +544,9 @@ window.__ModuleLoader__.load({
             focus: photo.focus,
             observations,
             ...(photo.role ? { role: photo.role } : {}),
+            ...(photo.focus.includes('subject') && photo.subject_id && photo.subject_id.trim().length > 0
+              ? { subject_id: photo.subject_id.trim() }
+              : {}),
           }
         })
         try {
@@ -521,7 +573,7 @@ window.__ModuleLoader__.load({
           setGuide(typeof data.guide_md === 'string' ? data.guide_md : '')
           setSummary(data.summary || null)
           setPackId(typeof data.pack_id === 'string' ? data.pack_id : '')
-          setPhase('done')
+          setPhase('preview')
         } catch (err) {
           if (run !== sessionRef.current) return
           if (err && err.name === 'AbortError') {
@@ -563,9 +615,11 @@ window.__ModuleLoader__.load({
             ? (hasAnalyzed ? 3 : 1)
             : phase === 'confirming'
               ? 4
-              : phase === 'done'
+              : phase === 'preview'
                 ? 5
-                : errorKind === 'upload'
+                : phase === 'done'
+                  ? 5
+                  : errorKind === 'upload'
                   ? 0
                   : errorKind === 'analyze'
                     ? 2
@@ -647,6 +701,9 @@ window.__ModuleLoader__.load({
           h('div', { key: 'banner', style: { padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-subtle, rgba(127,127,127,0.12))', marginBottom: '10px' } },
             h('div', { style: { fontWeight: 600 } }, '配置关注项并核对 AI 观察'),
             h('div', { style: { opacity: 0.75, marginTop: '2px' } }, '每张图可指定不同关注项，AI 只分析你勾选的项。'),
+            modelUsed
+              ? h('div', { style: { opacity: 0.6, marginTop: '2px' } }, `本次分析使用：${modelUsed}`)
+              : null,
             h('div', { style: { opacity: 0.75, marginTop: '2px' } }, '只有点“确认全部并生成 guide”才会写入采集端；未确认内容不会落库。'),
             anyEmptyFocus
               ? h('div', { style: { color: 'var(--dsw-alias-danger, #e5484d)', marginTop: '4px', fontWeight: 600 } }, '请为每张图至少选一个关注项')
@@ -694,6 +751,14 @@ window.__ModuleLoader__.load({
                       ...ROLE_OPTIONS.map(option => h('option', { key: option.value, value: option.value }, `用途：${option.label}`)),
                     ),
                   ),
+                  photo.focus.includes('subject')
+                    ? h('input', {
+                      value: photo.subject_id || '',
+                      placeholder: '主体编号（同一人物填相同编号，如 A）',
+                      style: metaInputStyle,
+                      onChange: event => mutatePhoto(index, item => ({ ...item, subject_id: event.target.value })),
+                    })
+                    : null,
                 ),
               ),
               isFailed
@@ -727,10 +792,32 @@ window.__ModuleLoader__.load({
                 ? h('div', null,
                   h('div', { style: { fontSize: '11px', opacity: 0.6, marginBottom: '4px' } },
                     photo.status === 'done' ? 'AI 观察（可编辑）' : photo.status === 'manual' ? '手动填写内容' : '观察内容（可编辑）'),
-                  h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px' } },
+                  h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
                     photo.focus.map(field =>
-                      h('div', { key: `${index}-${field}` },
-                        h('div', { style: { opacity: 0.7, marginBottom: '3px' } }, LABELS[field]),
+                      h('div', {
+                        key: `${index}-${field}`,
+                        style: {
+                          padding: '8px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--dsw-alias-border-l1)',
+                          background: 'var(--dsw-alias-bg-base, rgba(127,127,127,0.04))',
+                        },
+                      },
+                        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '3px' } },
+                          h('div', { style: { fontWeight: 600, fontSize: '12px' } }, LABELS[field]),
+                          h('code', {
+                            style: {
+                              fontSize: '10px',
+                              opacity: 0.55,
+                              padding: '1px 5px',
+                              borderRadius: '4px',
+                              background: 'var(--dsw-alias-bg-subtle, rgba(127,127,127,0.16))',
+                            },
+                          }, field),
+                        ),
+                        FIELD_HINTS[field]
+                          ? h('div', { style: { fontSize: '10px', opacity: 0.55, marginBottom: '4px' } }, FIELD_HINTS[field])
+                          : null,
                         h('textarea', {
                           value: photo.values[field] || '',
                           rows: 2,
@@ -770,6 +857,39 @@ window.__ModuleLoader__.load({
             h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', opacity: 0.85 } },
               h('input', { type: 'checkbox', checked: noAnti, onChange: event => setNoAnti(event.target.checked) }),
               '本包明确无反模式',
+            ),
+          ),
+        )
+      }
+
+      if (phase === 'preview') {
+        const section4 = guideSection(guide, '## 4.')
+        const section7 = guideSection(guide, '## 7.')
+        const previewBoxStyle = {
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          font: 'inherit',
+          fontSize: '11px',
+          lineHeight: 1.55,
+          maxHeight: '26vh',
+          overflow: 'auto',
+          padding: '8px',
+          borderRadius: '8px',
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-subtle, rgba(127,127,127,0.08))',
+          margin: 0,
+        }
+        body.push(
+          h('div', { key: 'preview' },
+            h('div', { style: { fontWeight: 700, fontSize: '14px', marginBottom: '4px' } }, '下载前预览'),
+            h('div', { style: { opacity: 0.7, marginBottom: '10px' } }, '只显示 §4 与 §7；确认后下载完整 guide。'),
+            h('div', { style: { marginBottom: '10px' } },
+              h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '§4 呼吸感与环境动态'),
+              h('pre', { style: previewBoxStyle }, section4.length > 0 ? section4 : '（缺失）'),
+            ),
+            h('div', null,
+              h('div', { style: { fontWeight: 600, marginBottom: '4px' } }, '§7 补充规则'),
+              h('pre', { style: previewBoxStyle }, section7.length > 0 ? section7 : '（缺失）'),
             ),
           ),
         )
@@ -872,6 +992,20 @@ window.__ModuleLoader__.load({
             h('button', { key: 'ok', type: 'button', style: buttonStyle(canConfirm ? 'primary' : 'secondary', !canConfirm), disabled: !canConfirm, onClick: confirm }, '确认全部并生成 guide'),
           )
         }
+      }
+      if (phase === 'preview') {
+        footer.push(
+          h('button', { key: 'back', type: 'button', style: buttonStyle('secondary', false), onClick: () => setPhase('reviewing') }, '返回修改'),
+          h('button', {
+            key: 'confirm-download',
+            type: 'button',
+            style: buttonStyle('primary', false),
+            onClick: () => {
+              download()
+              setPhase('done')
+            },
+          }, '确认下载'),
+        )
       }
       if (phase === 'done') {
         footer.push(

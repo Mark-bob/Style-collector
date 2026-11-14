@@ -18,6 +18,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 }>>, Schemastery.ObjectT<NoInfer<{
     dsh_home: z<string, string, "defined">;
 }>>, "plain">;
+/** 扫描 _ui-uploads，只删除没有被任何 pack 引用的文件。默认 dry-run。 */
+export declare function cleanupUploads(confirm: boolean): Promise<Record<string, unknown>>;
 export declare function apply(ctx: Context, config?: {
     dsh_home?: string;
 }): void;

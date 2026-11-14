@@ -12,8 +12,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
-import { access, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, readFile, readdir, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import {
   appendPhoto,
   configureStore,
@@ -21,6 +21,7 @@ import {
   packDir,
   packExists,
   packFile,
+  packRoot,
   photosFile,
   readPack,
   slugify,
@@ -120,6 +121,129 @@ async function validatePackState(
   return { pack_id: packId, photo_count: photos.length, missing, valid: missing.length === 0 }
 }
 
+function pathKey(path: string): string {
+  const resolved = resolve(path)
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+}
+
+async function walkFiles(root: string, skip: ReadonlySet<string> = new Set()): Promise<string[]> {
+  const out: string[] = []
+  let entries
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    const full = join(root, entry.name)
+    if (entry.isDirectory()) {
+      if (skip.has(entry.name)) continue
+      out.push(...(await walkFiles(full, skip)))
+    } else if (entry.isFile()) out.push(full)
+  }
+  return out
+}
+
+async function collectReferencedUploads(): Promise<Set<string>> {
+  const refs = new Set<string>()
+  const add = (value: unknown): void => {
+    if (typeof value === 'string' && isAbsolute(value)) refs.add(pathKey(value))
+  }
+  for (const file of await walkFiles(packRoot(), new Set(['_ui-uploads', 'node_modules', '.git']))) {
+    if (file.split(/[\\/]/).includes('_ui-uploads')) continue
+    if (file.endsWith('photos.jsonl')) {
+      const raw = await readFile(file, 'utf8').catch(() => '')
+      for (const line of raw.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed.length === 0) continue
+        try {
+          const record = JSON.parse(trimmed) as { path?: unknown; source_path?: unknown }
+          add(record.path)
+          add(record.source_path)
+        } catch {
+          // 坏行跳过
+        }
+      }
+    } else if (file.endsWith('pack.json')) {
+      try {
+        const pack = JSON.parse(await readFile(file, 'utf8')) as { photos?: Array<{ path?: unknown; source_path?: unknown }> }
+        for (const photo of pack.photos ?? []) {
+          add(photo.path)
+          add(photo.source_path)
+        }
+      } catch {
+        // 非包 JSON 跳过
+      }
+    }
+  }
+  return refs
+}
+
+async function removeEmptyDirs(root: string): Promise<void> {
+  const dirs: string[] = []
+  const collect = async (dir: string): Promise<void> => {
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) await collect(join(dir, entry.name))
+    }
+    if (dir !== root) dirs.push(dir)
+  }
+  await collect(root)
+  dirs.sort((left, right) => right.length - left.length)
+  for (const dir of dirs) {
+    try {
+      await rmdir(dir)
+    } catch {
+      // 非空目录保留
+    }
+  }
+}
+
+/** 扫描 _ui-uploads，只删除没有被任何 pack 引用的文件。默认 dry-run。 */
+export async function cleanupUploads(confirm: boolean): Promise<Record<string, unknown>> {
+  const root = join(packRoot(), '_ui-uploads')
+  const files = await walkFiles(root)
+  const referenced = await collectReferencedUploads()
+  const unreferenced: string[] = []
+  let bytes = 0
+  for (const file of files) {
+    if (referenced.has(pathKey(file))) continue
+    unreferenced.push(file)
+    try {
+      bytes += (await stat(file)).size
+    } catch {
+      // 文件消失时忽略大小
+    }
+  }
+  const deleted: string[] = []
+  if (confirm) {
+    for (const file of unreferenced) {
+      try {
+        await unlink(file)
+        deleted.push(file)
+      } catch {
+        // 已删除或占用时跳过
+      }
+    }
+    if (deleted.length > 0) await removeEmptyDirs(root)
+  }
+  return {
+    dry_run: !confirm,
+    upload_root: root,
+    scanned: files.length,
+    referenced: files.length - unreferenced.length,
+    unreferenced_count: unreferenced.length,
+    bytes,
+    unreferenced: unreferenced.slice(0, 20),
+    deleted,
+  }
+}
+
 export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
   configureStore({ dshHome: config.dsh_home })
   // 1. 初始化导演包
@@ -203,6 +327,10 @@ export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
         enum: [...PHOTO_ROLES],
         description: '用途：style（画风）/ lighting（灯光）/ color（色彩）/ composition（构图）/ camera（视角）/ setting（场景）/ material（材质）/ texture（质感）/ atmosphere（氛围）/ subject（人物）/ props（道具）/ note（备注）；省略则不标注。',
       },
+      subject_id: {
+        type: 'string',
+        description: '同一主体的编号；多张图填相同值时 guide §4 人物/主体聚合。可选。',
+      },
       focus: {
         type: 'array',
         items: { type: 'string', enum: [...PHOTO_FOCUS] },
@@ -252,6 +380,7 @@ export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
         observations: args.observations,
         path_verified: verified,
         role: args.role,
+        subject_id: args.subject_id,
       })
       if (!validated.ok) {
         return { appended: false, error: 'invalid_photo', issues: validated.issues, pack_id: args.pack_id }
@@ -459,6 +588,32 @@ export function apply(ctx: Context, config: { dsh_home?: string } = {}): void {
     async execute(args): Promise<Record<string, Json>> {
       const pack = await readPack(args.pack_id)
       return { pack_id: args.pack_id, pack: pack === null ? null : asJson(pack) }
+    },
+  }))
+
+  // 6. 清理未引用的上传原图（默认 dry-run）
+  ctx.tools.register(defineTool({
+    name: 'cleanup_uploads',
+    description:
+      'Scan _ui-uploads for files not referenced by any pack. Dry-run by default; pass confirm=true to delete. Referenced files and archived packs are never removed.',
+    parameters: {
+      confirm: { type: 'boolean', description: 'true 才真删；默认只报告。' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => {
+        const scanned = String(value['scanned'] ?? 0)
+        const referenced = String(value['referenced'] ?? 0)
+        const count = String(value['unreferenced_count'] ?? 0)
+        const bytes = String(value['bytes'] ?? 0)
+        if (value['dry_run'] === true) {
+          return text(`cleanup_uploads 干跑：扫描 ${scanned}，被引用 ${referenced}，未引用 ${count}（${bytes} 字节）。传 confirm=true 才删除。`)
+        }
+        return text(`cleanup_uploads 已删除 ${String(Array.isArray(value['deleted']) ? value['deleted'].length : 0)} 个未引用文件。`)
+      },
+    },
+    async execute(args): Promise<Record<string, Json>> {
+      return (await cleanupUploads(args.confirm === true)) as unknown as Record<string, Json>
     },
   }))
 }

@@ -75,6 +75,8 @@ function photoDisplayPath(photo: PhotoRecord, packId: string): string {
     const name = photo.path.split(/[\\/]/).filter(Boolean).pop() ?? photo.path
     return `[路径未验证：${name}]`
   }
+  const normalized = photo.path.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (!isAbsolute(photo.path)) return `./${normalized}`
   const absolute = resolve(photo.path)
   const root = resolve(packDir(packId))
   const rel = relative(root, absolute)
@@ -150,6 +152,27 @@ export function renderGuide(pack: DirectorPack, packId: string): GuideResult {
   ]
   for (const category of categories) {
     s4.push(`- ${category.label}：`)
+    if (category.focus === 'subject') {
+      const emitted = new Set<string>()
+      for (const photo of photos) {
+        const subjectId = photo.subject_id
+        if (subjectId !== undefined && subjectId.length > 0) {
+          if (emitted.has(subjectId)) continue
+          emitted.add(subjectId)
+          const group = photos.filter(item => item.subject_id === subjectId)
+          const values = group
+            .map(item => item.observations.subject?.trim())
+            .filter((value): value is string => value !== undefined && value.length > 0)
+          s4.push(
+            `  - 主体 ${subjectId}（${group.map(item => item.photo_id).join('/')}）：${values.length > 0 ? values.join(' / ') : '[未采集]'}`,
+          )
+        } else {
+          const value = photo.observations.subject?.trim()
+          s4.push(`  - ${photo.photo_id}：${value !== undefined && value.length > 0 ? value : '[未采集]'}`)
+        }
+      }
+      continue
+    }
     for (const photo of photos) {
       const value = observationForFocus(photo, category.focus)
       if (value === undefined) s4.push(`  - ${photo.photo_id}：[未采集]`)

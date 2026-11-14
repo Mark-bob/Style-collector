@@ -22,15 +22,21 @@
 | `director_pack_validate` | 校验照片与 `anti_patterns` / `honest_limits` |
 | `director_pack_export` | 合并 photos 并导出 pack.json 与/或 guide-*.md |
 | `director_pack_get` | 读取当前包 |
+| `cleanup_uploads` | 清理 `_ui-uploads` 中未被任何 pack 引用的文件（默认 dry-run） |
 
 - `director_pack_init`：参数 `director`、`anchor_works`，返回 `pack_id`；已存在时返回 `already_exists`。
-- `photo_append`：写 `photos.jsonl`；`focus` 列出的字段必须在 `observations` 里，未列出的字段必须为 null 或省略；同时检查 `path` 文件是否存在，写入 `path_verified`（不存在也允许追加，只标记未验证）。
+- `photo_append`：写 `photos.jsonl`；`focus` 列出的字段必须在 `observations` 里，未列出的字段必须为 null 或省略；同时检查 `path` 文件是否存在，写入 `path_verified`（不存在也允许追加，只标记未验证）。可选 `role`、`subject_id`。
 - `photo_validate` / `director_pack_validate`：照片非空、每条 focus 都有 observation、`anti_patterns` / `honest_limits` 非空；照片模式不强制 `mental_models`。
 - `director_pack_export`：`format` 取 `pack` / `guide` / `both`（默认 both）；合并 `photos.jsonl` 进 `pack.photos`。
+- `cleanup_uploads`：扫描 `_ui-uploads`，只报告/删除未被任何 pack 的 `photos.jsonl` 或 `pack.json` 引用的文件；默认 `dry_run=true`，传 `confirm=true` 才真删。归档包引用同样受保护。
+- `confirm_observations`（UI Host）：成功时把上传原图复制到 `<pack>/photos/<photo_id>.<ext>`，`path` 改为 `photos/...`，`source_path` 保留原上传绝对路径；guide §6 输出 `./photos/...`。
 
 ## 照片参考包模式
 
-- `PhotoRecord`：`photo_id`、绝对路径 `path`、`focus[]`、`observations{}`、`evidence_level: "observed"`、`path_verified?`。
+- `PhotoRecord`：`photo_id`、`path`（绝对路径或 `photos/...` 包内相对路径）、`focus[]`、`observations{}`、`evidence_level: "observed"`、`path_verified?`、`role?`、`subject_id?`、`source_path?`。
+- 生命周期：`confirm_observations` 成功后图片落到包内 `photos/`，`path` 改为 `photos/<id>.<ext>`；原上传路径记在 `source_path`。guide §6 优先输出 `./photos/...`；包外绝对路径仍输出绝对路径，未验证输出 `[路径未验证：文件名]`。
+- `subject_id`（可选）：同一主体填相同编号（如 `A`）。guide §4“人物/主体”把同编号照片聚合成 `主体 A（P01/P02）：…`，不填则逐图显示。
+- `_ui-uploads` 只是中转区；`cleanup_uploads` 可清理无引用文件，UI 的 `discard` 会删除该临时包引用过的上传原图。
 - focus 取值：`light_direction` / `color_palette` / `composition` / `perspective` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；`color_palette` 对应 `observations.key_colors`（hex）。
 - `role`（可选）：`style` / `lighting` / `color` / `composition` / `camera` / `setting` / `material` / `texture` / `atmosphere` / `subject` / `props` / `note`；guide §6 标注每张图的用途，色板按 role 分组聚合，不跨用途混合。旧值 `prop` 自动归一为 `props`。
 - guide 里未在 `focus` 中列出的字段标 `[未采集]`，不是 `[待采集]`。
@@ -42,7 +48,7 @@
 
 - §1 情绪基调只在照片 `note` 存在跨照片共性时引用，否则 `[待采集：无跨照片共性归纳]`；条件规则取已有 `decision_heuristics`。
 - §2 / §3 恒为 `[待采集：照片无时间信息]` / `[待采集：照片无动作信息]`。
-- §4 逐照片按 5 个类别聚合；四层画面与环境动态标 `[待采集]`。
+- §4 逐照片按类别聚合；`subject_id` 相同的照片在“人物/主体”下聚合成一条；四层画面与环境动态标 `[待采集]`。
 - §5 母版原文，标题下带 `[消费端契约，采集端不改写]`。
 - §6 照片路径 + 色板聚合。
 - §7 原文引用 `anti_patterns` / `honest_limits`，并自动追加“基于静态照片提取”的边界说明。
@@ -87,7 +93,9 @@
 $DSH_HOME/director-style-packs/
 ├── <pack_id>/
 │   ├── pack.json    包主体
-│   └── photos.jsonl 照片记录，一行一条
+│   ├── photos.jsonl 照片记录，一行一条
+│   └── photos/      包内照片副本（confirm_observations 写入）
+├── _ui-uploads/     上传中转区（可被 cleanup_uploads 清理）
 └── _archive/        历史样本（photo-test、shot-samples）
 ```
 
